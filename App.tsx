@@ -1,9 +1,11 @@
 import React, { Component } from "react";
-import { StyleSheet, View, Button, PermissionsAndroid, Platform } from "react-native";
+import { StyleSheet, View, Button, TextInput, PermissionsAndroid, Platform, TouchableOpacity, Text } from "react-native";
 import MapboxGL from "@rnmapbox/maps";
 import Geolocation from "react-native-geolocation-service";
 
-MapboxGL.setAccessToken("sk.eyJ1Ijoia255aGFnbyIsImEiOiJjbHluM3E4MnowMjFpMnFzNGlrcDVmb2poIn0.StmL2pLmbTb47Rm7nOJ1ag");
+const MAPBOX_ACCESS_TOKEN = "sk.eyJ1Ijoia255aGFnbyIsImEiOiJjbHluM3E4MnowMjFpMnFzNGlrcDVmb2poIn0.StmL2pLmbTb47Rm7nOJ1ag";
+
+MapboxGL.setAccessToken(MAPBOX_ACCESS_TOKEN);
 
 const styles = StyleSheet.create({
   page: {
@@ -33,13 +35,59 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 5,
   },
+  input: {
+    height: 40,
+    borderColor: 'gray',
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingLeft: 10,
+  },
+  zoomContainer: {
+    position: 'absolute',
+    right: 20,
+    top: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    borderRadius: 5,
+    padding: 5,
+  },
+  zoomButton: {
+    width: 30,
+    height: 30,
+    backgroundColor: 'white',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginVertical: 5,
+    borderRadius: 15,
+  },
+  zoomButtonText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
 });
+
+class ZoomControls extends Component {
+  render() {
+    return (
+      <View style={styles.zoomContainer}>
+        <TouchableOpacity style={styles.zoomButton} onPress={this.props.onZoomIn}>
+          <Text style={styles.zoomButtonText}>+</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.zoomButton} onPress={this.props.onZoomOut}>
+          <Text style={styles.zoomButtonText}>-</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+}
 
 export default class App extends Component {
   state = {
     latitude: null,
     longitude: null,
     offlinePack: null,
+    destination: "",
+    route: null,
+    zoomLevel: 15,
   };
 
   async componentDidMount() {
@@ -112,23 +160,86 @@ export default class App extends Component {
     console.warn("Offline pack download error", error);
   };
 
-  render() {
+  handleDestinationInput = (text) => {
+    this.setState({ destination: text });
+  }
+
+  geocodeDestination = async () => {
+    const { destination } = this.state;
+    try {
+      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(destination)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+      const data = await response.json();
+      if (data.features && data.features.length > 0) {
+        const [long, lat] = data.features[0].center;
+        return { latitude: lat, longitude: long };
+      }
+    } catch (error) {
+      console.error("Geocoding error:", error);
+    }
+    return null;
+  }
+
+  getDirections = async () => {
     const { latitude, longitude } = this.state;
+    const dest = await this.geocodeDestination();
+    if (dest) {
+      try {
+        const response = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${longitude},${latitude};${dest.longitude},${dest.latitude}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`);
+        const data = await response.json();
+        if (data.routes && data.routes.length > 0) {
+          this.setState({ route: data.routes[0].geometry });
+        }
+      } catch (error) {
+        console.error("Routing error:", error);
+      }
+    }
+  }
+
+  onZoomIn = () => {
+    this.setState(prevState => ({ zoomLevel: Math.min(prevState.zoomLevel + 1, 20) }));
+  }
+
+  onZoomOut = () => {
+    this.setState(prevState => ({ zoomLevel: Math.max(prevState.zoomLevel - 1, 0) }));
+  }
+
+  render() {
+    const { latitude, longitude, route } = this.state;
 
     return (
       <View style={styles.page}>
         <View style={styles.container}>
           {latitude && longitude ? (
-            <MapboxGL.MapView style={styles.map}>
+            <MapboxGL.MapView
+              style={styles.map}
+              scrollEnabled={true}
+              zoomEnabled={true}
+            >
               <MapboxGL.Camera
-                zoomLevel={15}
+                zoomLevel={this.state.zoomLevel}
                 centerCoordinate={[longitude, latitude]}
               />
               <MapboxGL.UserLocation />
+              {route && (
+                <MapboxGL.ShapeSource id="routeSource" shape={route}>
+                  <MapboxGL.LineLayer id="routeLayer" style={{ lineColor: 'blue', lineWidth: 3 }} />
+                </MapboxGL.ShapeSource>
+              )}
             </MapboxGL.MapView>
           ) : null}
+          <ZoomControls onZoomIn={this.onZoomIn} onZoomOut={this.onZoomOut} />
         </View>
         <View style={styles.buttonContainer}>
+          <TextInput
+            style={styles.input}
+            onChangeText={this.handleDestinationInput}
+            value={this.state.destination}
+            placeholder="Enter destination"
+          />
+          <Button
+            title="Get Directions"
+            onPress={this.getDirections}
+          />
           <Button
             title="Download Offline Map"
             onPress={this.downloadOfflineMap}
