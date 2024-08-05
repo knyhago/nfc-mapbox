@@ -1,378 +1,339 @@
-import React, { Component } from "react";
-import { StyleSheet, View, Button, TextInput, PermissionsAndroid, Platform, TouchableOpacity, Text } from "react-native";
-import MapboxGL from "@rnmapbox/maps";
-import Geolocation from "react-native-geolocation-service";
-import NetInfo from "@react-native-community/netinfo";
+import React, { useEffect, useState, useRef } from 'react';
+import { View, StyleSheet, Text, Alert, TouchableOpacity } from 'react-native';
+import MapboxGL from '@rnmapbox/maps';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Picker } from '@react-native-picker/picker';
 import NfcManager, { NfcTech } from 'react-native-nfc-manager';
 
-const MAPBOX_ACCESS_TOKEN = "sk.eyJ1Ijoia255aGFnbyIsImEiOiJjbHluM3E4MnowMjFpMnFzNGlrcDVmb2poIn0.StmL2pLmbTb47Rm7nOJ1ag";
-
+const MAPBOX_ACCESS_TOKEN = 'sk.eyJ1Ijoia255aGFnbyIsImEiOiJjbHluM3E4MnowMjFpMnFzNGlrcDVmb2poIn0.StmL2pLmbTb47Rm7nOJ1ag';
 MapboxGL.setAccessToken(MAPBOX_ACCESS_TOKEN);
 
+const OfflineNavigationMap = () => {
+  const [startCoordinate, setStartCoordinate] = useState([-0.1276, 51.5074]); // London City Center
+  const [destinations, setDestinations] = useState({
+    'Exit 1': [-0.0753, 51.5055],
+    'Exit 2': [-0.1419, 51.5014],
+    'Exit 3': [-0.1269, 51.5194]
+  });
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [offlinePack, setOfflinePack] = useState(null);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [route, setRoute] = useState(null);
+  const [zoomLevel, setZoomLevel] = useState(12);
+  const [selectedDestination, setSelectedDestination] = useState('Exit 1');
+  const [nfcEnabled, setNfcEnabled] = useState(false);
+
+  const mapRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await NfcManager.start();
+        MapboxGL.setTelemetryEnabled(false);
+        await loadOfflineData();
+      } catch (error) {
+        console.error('Initialization Error:', error);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    loadOfflineData();
+  }, [selectedDestination]);
+
+  const loadOfflineData = async () => {
+    try {
+      const storedRoutes = await AsyncStorage.getItem('offlineRoutes');
+      if (storedRoutes) {
+        const routes = JSON.parse(storedRoutes);
+        if (routes[selectedDestination]) {
+          setRoute(routes[selectedDestination]);
+        }
+      }
+      const packs = await MapboxGL.offlineManager.getPacks();
+      if (packs.length > 0) {
+        setOfflinePack(packs);
+      }
+    } catch (error) {
+      console.error('Error loading offline data:', error);
+    }
+  };
+
+  const downloadOfflineRegionsAndRoutes = async () => {
+    try {
+      setIsDownloading(true);
+      setDownloadProgress(0);
+
+      const downloadedRoutes = {};
+      const totalDestinations = Object.keys(destinations).length;
+      let progressIncrement = 100 / (totalDestinations * 2);
+
+      for (const destination of Object.keys(destinations)) {
+        const endCoordinate = destinations[destination];
+
+        // Define the bounding box that includes start and end points
+        const bounds = [
+          [Math.min(startCoordinate[0], endCoordinate[0]), Math.min(startCoordinate[1], endCoordinate[1])],
+          [Math.max(startCoordinate[0], endCoordinate[0]), Math.max(startCoordinate[1], endCoordinate[1])]
+        ];
+
+        // Add some padding to the bounding box
+        const padding = 0.01; // Approximately 1km
+        bounds[0][0] -= padding;
+        bounds[0][1] -= padding;
+        bounds[1][0] += padding;
+        bounds[1][1] += padding;
+
+        const packName = `offline_region_${destination}_${Date.now()}`;
+
+        // Download offline region
+        await MapboxGL.offlineManager.createPack({
+          name: packName,
+          styleURL: MapboxGL.StyleURL.Street,
+          minZoom: 10,
+          maxZoom: 15,
+          bounds: bounds,
+        }, (offlinePack, status) => {
+          setDownloadProgress(prevProgress => prevProgress + progressIncrement * (status.percentage / 100));
+        });
+
+        // Fetch and store route
+        const response = await fetch(
+          `https://api.mapbox.com/directions/v5/mapbox/walking/${startCoordinate.join(',')};${endCoordinate.join(',')
+          }?geometries=geojson&steps=true&overview=full&access_token=${MAPBOX_ACCESS_TOKEN}`
+        );
+        const json = await response.json();
+        if (json.routes && json.routes.length > 0) {
+          downloadedRoutes[destination] = json.routes[0].geometry.coordinates;
+        } else {
+          throw new Error(`No route found for ${destination}`);
+        }
+        setDownloadProgress(prevProgress => prevProgress + progressIncrement);
+      }
+
+      // Store all routes in AsyncStorage
+      await AsyncStorage.setItem('offlineRoutes', JSON.stringify(downloadedRoutes));
+
+      setDownloadProgress(100);
+      setIsDownloading(false);
+      setOfflinePack(await MapboxGL.offlineManager.getPacks());
+      Alert.alert('Download Complete', 'Offline regions and routes have been downloaded.');
+    } catch (error) {
+      console.error('Error downloading offline data:', error);
+      setIsDownloading(false);
+      Alert.alert('Download Error', 'Failed to download offline regions and routes.');
+    }
+  };
+
+  const startNavigation = () => {
+    if (offlinePack && route) {
+      setIsNavigating(true);
+    } else {
+      Alert.alert('Navigation Error', 'Please download the offline region and route first.');
+    }
+  };
+
+  const stopNavigation = () => {
+    setIsNavigating(false);
+  };
+
+  const zoomIn = () => {
+    setZoomLevel(prevZoom => Math.min(prevZoom + 1, 20));
+  };
+
+  const zoomOut = () => {
+    setZoomLevel(prevZoom => Math.max(prevZoom - 1, 0));
+  };
+
+  const readNfcTag = async () => {
+    try {
+      await NfcManager.requestTechnology(NfcTech.Ndef);
+      const tag = await NfcManager.getTag();
+      const ndefMessage = tag.ndefMessage[0];
+      const payload = ndefMessage.payload;
+
+      const text = String.fromCharCode.apply(null, payload).substring(3);
+      const data = JSON.parse(text);
+
+      setStartCoordinate(data.START_COORDINATE);
+      setDestinations(data.DESTINATIONS);
+
+      setNfcEnabled(true);
+      await downloadOfflineRegionsAndRoutes();
+      await loadOfflineData();
+    } catch (error) {
+      console.warn('Error reading NFC tag:', error);
+    } finally {
+      NfcManager.cancelTechnologyRequest();
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <MapboxGL.MapView
+        ref={mapRef}
+        style={styles.map}
+        styleURL={MapboxGL.StyleURL.Street}
+        offlineEnabled={true}
+      >
+        {startCoordinate && (
+          <>
+            <MapboxGL.Camera
+              zoomLevel={zoomLevel}
+              centerCoordinate={startCoordinate}
+            />
+            <MapboxGL.PointAnnotation
+              id="startPoint"
+              coordinate={startCoordinate}
+              title="Start"
+            />
+          </>
+        )}
+        {selectedDestination && destinations[selectedDestination] && (
+          <MapboxGL.PointAnnotation
+            id="endPoint"
+            coordinate={destinations[selectedDestination]}
+            title="End"
+          />
+        )}
+        {isNavigating && route && (
+          <MapboxGL.ShapeSource
+            id="routeSource"
+            shape={{
+              type: 'FeatureCollection',
+              features: [
+                {
+                  type: 'Feature',
+                  properties: {},
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: route,
+                  },
+                },
+              ],
+            }}
+          >
+            <MapboxGL.LineLayer
+              id="routeLayer"
+              style={{
+                lineColor: 'red',
+                lineWidth: 5,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+          </MapboxGL.ShapeSource>
+        )}
+      </MapboxGL.MapView>
+
+      <View style={styles.pickerContainer}>
+        <Picker
+          selectedValue={selectedDestination}
+          style={styles.picker}
+          onValueChange={(itemValue) => setSelectedDestination(itemValue)}
+        >
+          {Object.keys(destinations).map((destination) => (
+            <Picker.Item key={destination} label={destination} value={destination} />
+          ))}
+        </Picker>
+      </View>
+
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={downloadOfflineRegionsAndRoutes}
+          disabled={isDownloading}
+        >
+          <Text style={styles.buttonText}>
+            {isDownloading ? `Downloading: ${downloadProgress.toFixed(2)}%` : "Download Offline Data"}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={isNavigating ? stopNavigation : startNavigation}
+          disabled={!offlinePack || !route}
+        >
+          <Text style={styles.buttonText}>
+            {isNavigating ? "Stop Navigation" : "Start Navigation"}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={readNfcTag}
+        >
+          <Text style={styles.buttonText}>
+            {nfcEnabled ? "NFC Enabled" : "Read NFC Tag"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.zoomButtonContainer}>
+        <TouchableOpacity style={styles.zoomButton} onPress={zoomIn}>
+          <Text style={styles.zoomButtonText}>+</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.zoomButton} onPress={zoomOut}>
+          <Text style={styles.zoomButtonText}>-</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
 const styles = StyleSheet.create({
-  page: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#F5FCFF"
-  },
   container: {
     flex: 1,
-    width: '100%',
   },
   map: {
-    flex: 1
+    flex: 1,
   },
   buttonContainer: {
     position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    backgroundColor: 'white',
-    borderRadius: 5,
-    padding: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.8,
-    shadowRadius: 2,
-    elevation: 5,
-    maxHeight: 250,
-    overflow: 'scroll',
+    bottom: 16,
+    left: 16,
+    right: 16,
   },
-  input: {
-    height: 40,
-    borderColor: 'gray',
-    borderWidth: 1,
-    marginBottom: 10,
-    paddingLeft: 10,
-  },
-  zoomContainer: {
-    position: 'absolute',
-    right: 20,
-    top: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    borderRadius: 5,
-    padding: 5,
-  },
-  zoomButton: {
-    width: 30,
-    height: 30,
-    backgroundColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginVertical: 5,
-    borderRadius: 15,
-  },
-  zoomButtonText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  homeButton: {
-    marginVertical: 10,
-    padding: 10,
+  button: {
     backgroundColor: '#007AFF',
-    borderRadius: 5,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
   },
-  homeButtonText: {
+  buttonText: {
     color: 'white',
     textAlign: 'center',
     fontWeight: 'bold',
   },
+  zoomButtonContainer: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+  },
+  zoomButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  zoomButtonText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  pickerContainer: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: 8,
+  },
+  picker: {
+    height: 50,
+    width: '100%',
+  },
 });
 
-class ZoomControls extends Component {
-  render() {
-    return (
-      <View style={styles.zoomContainer}>
-        <TouchableOpacity style={styles.zoomButton} onPress={this.props.onZoomIn}>
-          <Text style={styles.zoomButtonText}>+</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.zoomButton} onPress={this.props.onZoomOut}>
-          <Text style={styles.zoomButtonText}>-</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-}
-
-export default class App extends Component {
-  state = {
-    latitude: null,
-    longitude: null,
-    offlinePack: null,
-    destination: "",
-    route: null,
-    zoomLevel: 15,
-    isOffline: false,
-    showMap: false,
-  };
-
-  async componentDidMount() {
-    MapboxGL.setTelemetryEnabled(false);
-    await this.requestLocationPermission();
-    this.getCurrentLocation();
-    this.checkNetworkConnectivity();
-
-    this.unsubscribe = NetInfo.addEventListener(state => {
-      this.setState({ isOffline: !state.isConnected });
-    });
-
-    await NfcManager.start();
-  }
-
-  componentWillUnmount() {
-    if (this.unsubscribe) {
-      this.unsubscribe();
-    }
-    NfcManager.cancelTechnologyRequest().catch(() => 0);
-  }
-
-  requestLocationPermission = async () => {
-    try {
-      if (Platform.OS === 'android') {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          {
-            title: "Location Permission",
-            message: "This app needs access to your location.",
-            buttonNeutral: "Ask Me Later",
-            buttonNegative: "Cancel",
-            buttonPositive: "OK"
-          }
-        );
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          console.warn("Location permission denied");
-        }
-      }
-    } catch (err) {
-      console.warn(err);
-    }
-  };
-
-  getCurrentLocation = () => {
-    Geolocation.getCurrentPosition(
-      position => {
-        const { latitude, longitude } = position.coords;
-        this.setState({ latitude, longitude });
-      },
-      error => {
-        console.warn(error.code, error.message);
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
-    );
-  };
-
-  checkNetworkConnectivity = async () => {
-    const networkState = await NetInfo.fetch();
-    this.setState({ isOffline: !networkState.isConnected });
-  };
-
-  downloadOfflineMap = async () => {
-    const { latitude, longitude } = this.state;
-    if (latitude && longitude) {
-      const bounds = [[longitude - 0.05, latitude - 0.05], [longitude + 0.05, latitude + 0.05]];
-
-      // Generate a base name for the offline pack
-      const baseName = `offline_${latitude.toFixed(4)}_${longitude.toFixed(4)}`;
-
-      // Function to check if a pack with a given name exists
-      const packExists = async (name) => {
-        const packs = await MapboxGL.offlineManager.getPacks();
-        return packs.some(pack => pack.name === name);
-      };
-
-      // Find an available name
-      let packName = baseName;
-      let counter = 1;
-      while (await packExists(packName)) {
-        packName = `${baseName}_${counter}`;
-        counter++;
-      }
-
-      const options = {
-        name: packName,
-        styleURL: MapboxGL.StyleURL.Street,
-        bounds,
-        minZoom: 10,
-        maxZoom: 16,
-      };
-
-      try {
-        const offlinePack = await MapboxGL.offlineManager.createPack(options, this.onOfflinePackProgress);
-        this.setState({ offlinePack });
-        console.log("Offline pack download complete");
-        alert(`Offline map '${packName}' downloaded successfully!`);
-      } catch (error) {
-        console.warn("Offline pack download error", error);
-        alert("Failed to download offline map. Please try again.");
-      }
-    } else {
-      console.warn("Current location not available");
-      alert("Unable to download offline map. Please ensure location services are enabled.");
-    }
-  };
-
-  onOfflinePackProgress = (offlinePack, status) => {
-    console.log(status.percentage);
-  };
-
-  handleDestinationInput = (text) => {
-    this.setState({ destination: text });
-  }
-
-  geocodeDestination = async () => {
-    const { destination } = this.state;
-    try {
-      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(destination)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-      const data = await response.json();
-      if (data.features && data.features.length > 0) {
-        const [long, lat] = data.features[0].center;
-        return { latitude: lat, longitude: long };
-      }
-    } catch (error) {
-      console.error("Geocoding error:", error);
-    }
-    return null;
-  }
-
- getDirections = async () => {
-   const { latitude, longitude, isOffline } = this.state;
-
-   if (isOffline) {
-     alert("Offline mode: directions are not available. Please connect to the internet to get directions.");
-     return;
-   }
-
-   const dest = await this.geocodeDestination();
-   if (dest) {
-     try {
-       const response = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${longitude},${latitude};${dest.longitude},${dest.latitude}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`);
-       const data = await response.json();
-       if (data.routes && data.routes.length > 0) {
-         this.setState({ route: data.routes[0].geometry });
-       }
-     } catch (error) {
-       console.error("Routing error:", error);
-       alert("Unable to fetch directions. Please check your internet connection and try again.");
-     }
-   }
- }
-
-  onZoomIn = () => {
-    this.setState(prevState => ({ zoomLevel: Math.min(prevState.zoomLevel + 1, 20) }));
-  }
-
-  onZoomOut = () => {
-    this.setState(prevState => ({ zoomLevel: Math.max(prevState.zoomLevel - 1, 0) }));
-  }
-
-  readNfcTag = async () => {
-    try {
-      await NfcManager.requestTechnology(NfcTech.Ndef);
-
-      const tag = await NfcManager.getTag();
-      console.warn('Tag found', tag);
-
-      if (tag.ndefMessage && tag.ndefMessage.length > 0) {
-        const ndefRecord = tag.ndefMessage[0];
-        const textDecoder = new TextDecoder('utf-8');
-        const data = textDecoder.decode(ndefRecord.payload).substring(3);
-
-        if (data.startsWith('geo:')) {
-          const coordinates = data.substring(4);
-          const [latitude, longitude] = coordinates.split(',').map(parseFloat);
-
-          if (!isNaN(latitude) && !isNaN(longitude)) {
-            this.setState({ latitude, longitude, showMap: true });
-            console.log(`Updated coordinates: ${latitude}, ${longitude}`);
-            alert("NFC tag scanned successfully. Starting position set.");
-          } else {
-            console.warn('Invalid coordinate format');
-            alert("Invalid coordinate format in NFC tag.");
-          }
-        } else {
-          console.warn('Not a geo tag');
-          alert("The NFC tag does not contain location information.");
-        }
-      }
-    } catch (ex) {
-      console.warn('Oops!', ex);
-      alert("Failed to read NFC tag. Please try again.");
-    } finally {
-      NfcManager.cancelTechnologyRequest().catch(() => 0);
-    }
-  }
-
-  renderHomePage() {
-    return (
-      <View style={styles.page}>
-        <TouchableOpacity style={styles.homeButton} onPress={this.downloadOfflineMap}>
-          <Text style={styles.homeButtonText}>Download Current Location</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.homeButton} onPress={this.readNfcTag}>
-          <Text style={styles.homeButtonText}>Scan NFC Tag</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.homeButton} onPress={() => this.setState({ showMap: true })}>
-          <Text style={styles.homeButtonText}>Show Map</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  renderMap() {
-    const { latitude, longitude, route, isOffline } = this.state;
-
-    return (
-      <View style={styles.page}>
-        <View style={styles.container}>
-          {latitude && longitude ? (
-            <MapboxGL.MapView
-              style={styles.map}
-              scrollEnabled={true}
-              zoomEnabled={true}
-              styleURL={isOffline ? MapboxGL.StyleURL.Street : undefined}
-              offlineEnabled={isOffline}
-            >
-              <MapboxGL.Camera
-                zoomLevel={this.state.zoomLevel}
-                centerCoordinate={[longitude, latitude]}
-              />
-              <MapboxGL.UserLocation />
-              {route && !isOffline && (
-                <MapboxGL.ShapeSource id="routeSource" shape={route}>
-                  <MapboxGL.LineLayer id="routeLayer" style={{ lineColor: 'blue', lineWidth: 3 }} />
-                </MapboxGL.ShapeSource>
-              )}
-            </MapboxGL.MapView>
-          ) : null}
-          <ZoomControls onZoomIn={this.onZoomIn} onZoomOut={this.onZoomOut} />
-        </View>
-        <View style={styles.buttonContainer}>
-          <TextInput
-            style={styles.input}
-            onChangeText={this.handleDestinationInput}
-            value={this.state.destination}
-            placeholder="Enter destination"
-          />
-          <Button
-            title="Get Directions"
-            onPress={this.getDirections}
-            disabled={isOffline}
-          />
-          <Button
-            title={isOffline ? "Go Online" : "Go Offline"}
-            onPress={() => this.setState(prevState => ({ isOffline: !prevState.isOffline }))}
-          />
-          <Button
-            title="Back to Home"
-            onPress={() => this.setState({ showMap: false })}
-          />
-        </View>
-      </View>
-    );
-  }
-
-  render() {
-    return this.state.showMap ? this.renderMap() : this.renderHomePage();
-  }
-}
+export default OfflineNavigationMap;
