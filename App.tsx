@@ -9,7 +9,6 @@ MapboxGL.setAccessToken(MAPBOX_ACCESS_TOKEN);
 
 const TrekkingNavigationMap = () => {
   const [currentLocation, setCurrentLocation] = useState(null);
-  const [exitPoints, setExitPoints] = useState({});
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [offlinePack, setOfflinePack] = useState(null);
@@ -19,8 +18,11 @@ const TrekkingNavigationMap = () => {
   const [mapCenter, setMapCenter] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isSetupComplete, setIsSetupComplete] = useState(false);
+  const [storedRoutes, setStoredRoutes] = useState({});
+  const [exitPoint, setExitPoint] = useState(null);
 
   const mapRef = useRef(null);
+  const cameraRef = useRef(null);
 
   useEffect(() => {
     const initialize = async () => {
@@ -32,17 +34,14 @@ const TrekkingNavigationMap = () => {
         if (storedData) {
           const data = JSON.parse(storedData);
           if (data.isSetupComplete) {
-            setExitPoints(data.exitPoints);
             setMapCenter(data.center);
-            if (data.route) {
-              setRoute(data.route);
-            }
+            setStoredRoutes(data.storedRoutes || {});
             setIsSetupComplete(true);
           }
         }
 
         const packs = await MapboxGL.offlineManager.getPacks();
-        if (packs.length > 0) setOfflinePack(packs);
+        if (packs.length > 0) setOfflinePack(packs[0]);
       } catch (error) {
         console.error('Initialization Error:', error);
       }
@@ -50,6 +49,19 @@ const TrekkingNavigationMap = () => {
 
     initialize();
   }, []);
+
+  useEffect(() => {
+    if (route) {
+      setIsNavigating(true);
+      if (cameraRef.current) {
+        cameraRef.current.setCamera({
+          centerCoordinate: route[Math.floor(route.length / 2)],
+          zoomLevel: 12,
+          animationDuration: 2000,
+        });
+      }
+    }
+  }, [route]);
 
   const downloadOfflineRegion = useCallback(async (center, radius) => {
     try {
@@ -85,7 +97,7 @@ const TrekkingNavigationMap = () => {
   const getBoundsFromCenterAndRadius = (center, radiusInKm) => {
     const lat = center[1];
     const lon = center[0];
-    const radiusInDegrees = radiusInKm / 111.32; // Approximate degrees per km at the equator
+    const radiusInDegrees = radiusInKm / 111.32;
 
     const latMin = lat - radiusInDegrees;
     const latMax = lat + radiusInDegrees;
@@ -100,47 +112,63 @@ const TrekkingNavigationMap = () => {
     const payload = ndefMessage.payload;
     const text = String.fromCharCode.apply(null, payload).substring(3);
     const data = JSON.parse(text);
+    console.log('NFC Tag Data:', data);
 
     if (data.t === 'g') {
       const center = data.c;
-      const radius = data.r; // radius in km
+      const radius = data.r;
       await downloadOfflineRegion(center, radius);
-      const exitPointsData = data.e.reduce((acc, [lon, lat, name]) => {
-        acc[name] = [lon, lat];
-        return acc;
-      }, {});
-      setExitPoints(exitPointsData);
+
+      const newStoredRoutes = await fetchAndStoreRoutes(data.p);
+
       setMapCenter(center);
       setIsSetupComplete(true);
       await AsyncStorage.setItem('offlineData', JSON.stringify({
-        exitPoints: exitPointsData,
         center: center,
+        storedRoutes: newStoredRoutes,
         isSetupComplete: true
       }));
-      Alert.alert('Setup Complete', 'Map data and exit points set up.');
+      Alert.alert('Setup Complete', 'Map data and routes set up.');
     } else if (data.t === 'r' && isSetupComplete) {
-      const [lon, lat] = data.c;
-      setCurrentLocation([lon, lat]);
-      const nearestExit = findNearestExitPoint([lon, lat]);
-      if (nearestExit) {
-        const route = await fetchRoute([lon, lat], exitPoints[nearestExit]);
-        setRoute(route);
-        await AsyncStorage.setItem('offlineData', JSON.stringify({
-          exitPoints,
-          center: mapCenter,
-          route,
-          isSetupComplete: true
-        }));
+      const tagId = data.id;
+      console.log('Scanned tag ID:', tagId);
+      console.log('Stored routes:', storedRoutes);
+      if (storedRoutes[tagId]) {
+        console.log('Found route:', storedRoutes[tagId]);
+        setCurrentLocation(storedRoutes[tagId].route[0]);
+        setRoute(storedRoutes[tagId].route);
+        setExitPoint(storedRoutes[tagId].exitLocation);
+        console.log('Route set:', storedRoutes[tagId].route);
         setIsNavigating(true);
-        Alert.alert('Navigation Started', `Navigating to nearest exit point: ${nearestExit}`);
+        Alert.alert('Navigation Started', `Navigating to exit point: ${storedRoutes[tagId].exitName}`);
+      } else {
+        console.log('Route not found for tag ID:', tagId);
+        Alert.alert('Navigation Error', 'Could not find a stored route for this location.');
       }
     }
-  }, [mapCenter, exitPoints, downloadOfflineRegion, isSetupComplete]);
+  }, [downloadOfflineRegion, isSetupComplete, storedRoutes]);
 
-  const fetchRoute = async (start, end) => {
-    const response = await fetch(`https://api.mapbox.com/directions/v5/mapbox/walking/${start[0]},${start[1]};${end[0]},${end[1]}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`);
-    const data = await response.json();
-    return data.routes[0].geometry.coordinates;
+  const fetchAndStoreRoutes = async (points) => {
+    const newStoredRoutes = {};
+    for (const point of points) {
+      try {
+        const response = await fetch(
+          `https://api.mapbox.com/directions/v5/mapbox/walking/${point.l[0]},${point.l[1]};${point.e.l[0]},${point.e.l[1]}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`
+        );
+        const data = await response.json();
+        newStoredRoutes[point.i] = {
+          route: data.routes[0].geometry.coordinates,
+          exitName: point.e.n,
+          exitLocation: point.e.l
+        };
+        console.log(`Route stored for tag ${point.i}:`, newStoredRoutes[point.i]);
+      } catch (error) {
+        console.error(`Error fetching route for ${point.i}:`, error);
+      }
+    }
+    setStoredRoutes(newStoredRoutes);
+    console.log('All stored routes:', newStoredRoutes);
+    return newStoredRoutes;
   };
 
   const startNavigation = useCallback(() => {
@@ -170,41 +198,24 @@ const TrekkingNavigationMap = () => {
     }
   }, [handleNfcRead]);
 
-  const findNearestExitPoint = useCallback((location) => {
-    let nearest = null;
-    let shortestDistance = Infinity;
-    for (const [name, exitLocation] of Object.entries(exitPoints)) {
-      const distance = calculateDistance(location, exitLocation);
-      if (distance < shortestDistance) {
-        shortestDistance = distance;
-        nearest = name;
-      }
-    }
-    return nearest;
-  }, [exitPoints]);
-
-  const calculateDistance = (point1, point2) => {
-    const dx = point1[0] - point2[0];
-    const dy = point1[1] - point2[1];
-    return Math.sqrt(dx * dx + dy * dy);
-  };
-
   return (
     <View style={styles.container}>
       <MapboxGL.MapView ref={mapRef} style={styles.map} styleURL={MapboxGL.StyleURL.Outdoors} offlineEnabled>
-        <MapboxGL.Camera zoomLevel={zoomLevel} centerCoordinate={currentLocation || mapCenter || [-0.1276, 51.5074]} />
+        <MapboxGL.Camera
+          ref={cameraRef}
+          zoomLevel={zoomLevel}
+          centerCoordinate={currentLocation || mapCenter || [-0.1276, 51.5074]}
+        />
         {isSetupComplete && currentLocation && (
           <MapboxGL.PointAnnotation id="currentLocation" coordinate={currentLocation}>
             <View style={styles.currentLocationIcon} />
           </MapboxGL.PointAnnotation>
         )}
-        {isSetupComplete && Object.entries(exitPoints).map(([name, location]) => (
-          <MapboxGL.PointAnnotation key={name} id={`exit_${name}`} coordinate={location}>
-            <View style={styles.exitPointIcon}>
-              <Text style={styles.exitPointText}>{name}</Text>
-            </View>
+        {isSetupComplete && exitPoint && (
+          <MapboxGL.PointAnnotation id="exitPoint" coordinate={exitPoint}>
+            <View style={styles.exitPointIcon} />
           </MapboxGL.PointAnnotation>
-        ))}
+        )}
         {isSetupComplete && isNavigating && route && (
           <MapboxGL.ShapeSource
             id="routeSource"
@@ -327,28 +338,20 @@ const styles = StyleSheet.create({
   },
   scanningText: { marginTop: 10, fontSize: 16, color: '#007AFF' },
   currentLocationIcon: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: 'blue',
+    borderColor: 'white',
+    borderWidth: 2,
   },
   exitPointIcon: {
-    width: 0,
-    height: 0,
-    backgroundColor: 'transparent',
-    borderStyle: 'solid',
-    borderLeftWidth: 10,
-    borderRightWidth: 10,
-    borderBottomWidth: 20,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: 'red',
-  },
-  exitPointText: {
-    color: 'white',
-    textAlign: 'center',
-    fontSize: 12,
-    marginTop: 20,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'green',
+    borderColor: 'white',
+    borderWidth: 2,
   },
   routeLine: {
     lineColor: '#ff0000',
