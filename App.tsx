@@ -107,6 +107,11 @@ const TrekkingNavigationMap = () => {
     return [[lonMin, latMin], [lonMax, latMax]];
   };
 
+  const clearExistingRoutes = useCallback(async () => {
+    setStoredRoutes({});
+    await AsyncStorage.removeItem('offlineData');
+  }, []);
+
   const handleNfcRead = useCallback(async (tag) => {
     const ndefMessage = tag.ndefMessage[0];
     const payload = ndefMessage.payload;
@@ -115,6 +120,7 @@ const TrekkingNavigationMap = () => {
     console.log('NFC Tag Data:', data);
 
     if (data.t === 'g') {
+      await clearExistingRoutes();
       const center = data.c;
       const radius = data.r;
       await downloadOfflineRegion(center, radius);
@@ -123,12 +129,13 @@ const TrekkingNavigationMap = () => {
 
       setMapCenter(center);
       setIsSetupComplete(true);
+      setStoredRoutes(newStoredRoutes);
       await AsyncStorage.setItem('offlineData', JSON.stringify({
         center: center,
         storedRoutes: newStoredRoutes,
         isSetupComplete: true
       }));
-      Alert.alert('Setup Complete', 'Map data and routes set up.');
+      Alert.alert('Setup Updated', 'Map data and routes have been updated.');
     } else if (data.t === 'r' && isSetupComplete) {
       const tagId = data.id;
       console.log('Scanned tag ID:', tagId);
@@ -146,7 +153,7 @@ const TrekkingNavigationMap = () => {
         Alert.alert('Navigation Error', 'Could not find a stored route for this location.');
       }
     }
-  }, [downloadOfflineRegion, isSetupComplete, storedRoutes]);
+  }, [downloadOfflineRegion, isSetupComplete, storedRoutes, clearExistingRoutes]);
 
   const fetchAndStoreRoutes = async (points) => {
     const newStoredRoutes = {};
@@ -166,8 +173,6 @@ const TrekkingNavigationMap = () => {
         console.error(`Error fetching route for ${point.i}:`, error);
       }
     }
-    setStoredRoutes(newStoredRoutes);
-    console.log('All stored routes:', newStoredRoutes);
     return newStoredRoutes;
   };
 
