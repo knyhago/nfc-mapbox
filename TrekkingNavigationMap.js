@@ -113,94 +113,99 @@ const TrekkingNavigationMap = () => {
   }, []);
 
   const handleNfcRead = useCallback(async (tag) => {
-    console.log('NFC tag read:', tag);
-    if (!tag.ndefMessage || !tag.ndefMessage[0]) {
-      console.error('Invalid NFC tag format');
-      Alert.alert('NFC Error', 'Invalid NFC tag format');
-      return;
-    }
+      console.log('NFC tag read:', tag);
+      if (!tag.ndefMessage || !tag.ndefMessage[0]) {
+        console.error('Invalid NFC tag format');
+        Alert.alert('NFC Error', 'Invalid NFC tag format');
+        return;
+      }
 
-    const ndefMessage = tag.ndefMessage[0];
-    console.log('NDEF message:', ndefMessage);
-    const payload = ndefMessage.payload;
-    console.log('Payload:', payload);
-    const text = String.fromCharCode.apply(null, payload).substring(3);
-    console.log('Decoded text:', text);
+      const ndefMessage = tag.ndefMessage[0];
+      console.log('NDEF message:', ndefMessage);
+      const payload = ndefMessage.payload;
+      console.log('Payload:', payload);
+      const text = String.fromCharCode.apply(null, payload).substring(3);
+      console.log('Decoded text:', text);
 
-    let data;
-    try {
-      data = JSON.parse(text);
-      console.log('Parsed data:', data);
-    } catch (error) {
-      console.error('Error parsing NFC data:', error);
-      Alert.alert('NFC Error', 'Failed to parse NFC data');
-      return;
-    }
-
-    if (data.t === 'g') {
+      let data;
       try {
-        console.log('Fetching from:', 'https://nfcmapsapi-1.onrender.com/api/location');
-        const response = await fetch('https://nfcmapsapi-1.onrender.com/api/location');
-        console.log('Response status:', response.status);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const locationData = await response.json();
-        console.log('Received location data:', locationData);
-
-        // Transform the data to match the expected structure
-        const transformedData = {
-          center: locationData.c,
-          radius: locationData.r,
-          points: locationData.p
-        };
-
-        if (!Array.isArray(transformedData.center) ||
-            typeof transformedData.radius !== 'number' ||
-            !Array.isArray(transformedData.points)) {
-          console.error('Invalid location data structure:', transformedData);
-          throw new Error('Invalid location data structure');
-        }
-
-        await clearExistingRoutes();
-        const center = transformedData.center;
-        const radius = transformedData.radius;
-        await downloadOfflineRegion(center, radius);
-
-        const newStoredRoutes = await fetchAndStoreRoutes(transformedData.points);
-
-        setMapCenter(center);
-        setIsSetupComplete(true);
-        setStoredRoutes(newStoredRoutes);
-        await AsyncStorage.setItem('offlineData', JSON.stringify({
-          center: center,
-          storedRoutes: newStoredRoutes,
-          isSetupComplete: true
-        }));
-        Alert.alert('Setup Updated', 'Map data and routes have been updated.');
+        data = JSON.parse(text);
+        console.log('Parsed data:', data);
       } catch (error) {
-        console.error('Error fetching location data:', error);
-        Alert.alert('Setup Error', `Failed to fetch location data: ${error.message}`);
+        console.error('Error parsing NFC data:', error);
+        Alert.alert('NFC Error', 'Failed to parse NFC data');
+        return;
       }
 
-    } else if (data.t === 'r' && isSetupComplete) {
-      const tagId = data.id;
-      console.log('Scanned tag ID:', tagId);
-      console.log('Stored routes:', storedRoutes);
-      if (storedRoutes[tagId]) {
-        console.log('Found route:', storedRoutes[tagId]);
-        setCurrentLocation(storedRoutes[tagId].route[0]);
-        setRoute(storedRoutes[tagId].route);
-        setExitPoint(storedRoutes[tagId].exitLocation);
-        console.log('Route set:', storedRoutes[tagId].route);
-        setIsNavigating(true);
-        Alert.alert('Navigation Started', `Navigating to exit point: ${storedRoutes[tagId].exitName}`);
+      if (data.t === 'g') {
+        try {
+          const greenTagId = data.id;
+          console.log('Fetching from:', `https://nfcmapsapi-1.onrender.com/api/location/${greenTagId}`);
+          const response = await fetch(`https://nfcmapsapi-1.onrender.com/api/location/${greenTagId}`);
+          console.log('Response status:', response.status);
+
+          if (response.status === 404) {
+            throw new Error('Green tag ID not found');
+          }
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const locationData = await response.json();
+          console.log('Received location data:', locationData);
+
+          // Validate the received data structure
+          if (!locationData.t || !locationData.id || !Array.isArray(locationData.c) || typeof locationData.r !== 'number' || !Array.isArray(locationData.p)) {
+            throw new Error('Invalid data structure received from the server');
+          }
+
+          const center = locationData.c;
+          const radius = locationData.r;
+          const points = locationData.p;
+
+          await clearExistingRoutes();
+          await downloadOfflineRegion(center, radius);
+
+          const newStoredRoutes = await fetchAndStoreRoutes(points);
+
+          setMapCenter(center);
+          setIsSetupComplete(true);
+          setStoredRoutes(newStoredRoutes);
+          await AsyncStorage.setItem('offlineData', JSON.stringify({
+            center: center,
+            storedRoutes: newStoredRoutes,
+            isSetupComplete: true
+          }));
+          Alert.alert('Setup Updated', 'Map data and routes have been updated.');
+        } catch (error) {
+          console.error('Error fetching location data:', error);
+          if (error.message === 'Green tag ID not found') {
+            Alert.alert('Setup Error', 'The scanned green tag ID was not found in the system.');
+          } else {
+            Alert.alert('Setup Error', `Failed to fetch or process location data: ${error.message}`);
+          }
+        }
+      } else if (data.t === 'r' && isSetupComplete) {
+        const tagId = data.id;
+        console.log('Scanned tag ID:', tagId);
+        console.log('Stored routes:', storedRoutes);
+        if (storedRoutes[tagId]) {
+          console.log('Found route:', storedRoutes[tagId]);
+          setCurrentLocation(storedRoutes[tagId].route[0]);
+          setRoute(storedRoutes[tagId].route);
+          setExitPoint(storedRoutes[tagId].exitLocation);
+          console.log('Route set:', storedRoutes[tagId].route);
+          setIsNavigating(true);
+          Alert.alert('Navigation Started', `Navigating to exit point: ${storedRoutes[tagId].exitName}`);
+        } else {
+          console.log('Route not found for tag ID:', tagId);
+          Alert.alert('Navigation Error', 'Could not find a stored route for this location.');
+        }
       } else {
-        console.log('Route not found for tag ID:', tagId);
-        Alert.alert('Navigation Error', 'Could not find a stored route for this location.');
+        Alert.alert('Invalid Tag', 'The scanned tag is not recognized by the system.');
       }
-    }
-  }, [downloadOfflineRegion, isSetupComplete, storedRoutes, clearExistingRoutes]);
+    }, [downloadOfflineRegion, isSetupComplete, storedRoutes, clearExistingRoutes]);
 
   const fetchAndStoreRoutes = async (points) => {
     const newStoredRoutes = {};

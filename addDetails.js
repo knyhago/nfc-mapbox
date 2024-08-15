@@ -1,149 +1,319 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const AddLocationDetails = () => {
-  const [points, setPoints] = useState([{ i: '', lon: '', lat: '', exitName: '', exitLon: '', exitLat: '' }]);
+  const [newPoint, setNewPoint] = useState({ i: '', lon: '', lat: '', exitName: '', exitLon: '', exitLat: '', caution: '' });
   const [existingData, setExistingData] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [greenTagId, setGreenTagId] = useState('');
+  const [newGreenTag, setNewGreenTag] = useState({ id: '', lon: '', lat: '', radius: '' });
+  const [allGreenTags, setAllGreenTags] = useState([]);
 
   useEffect(() => {
-    fetchExistingData();
+    loadGreenTags();
   }, []);
 
-  const fetchExistingData = async () => {
+  useEffect(() => {
+    if (greenTagId) {
+      fetchExistingData();
+    }
+  }, [greenTagId]);
+
+  const loadGreenTags = async () => {
     try {
-      const response = await fetch('https://nfcmapsapi-1.onrender.com/api/location');
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const storedTags = await AsyncStorage.getItem('greenTags');
+      if (storedTags !== null) {
+        setAllGreenTags(JSON.parse(storedTags));
       }
-      const data = await response.json();
-      setExistingData(data);
     } catch (error) {
-      console.error('Error fetching existing data:', error);
-      Alert.alert('Error', 'Failed to fetch existing location data');
+      console.error('Error loading green tags:', error);
+      Alert.alert('Error', 'Failed to load green tags from storage');
     }
   };
 
-  const addPoint = () => {
-    setPoints([...points, { i: '', lon: '', lat: '', exitName: '', exitLon: '', exitLat: '' }]);
+  const saveGreenTags = async (tags) => {
+    try {
+      await AsyncStorage.setItem('greenTags', JSON.stringify(tags));
+    } catch (error) {
+      console.error('Error saving green tags:', error);
+      Alert.alert('Error', 'Failed to save green tags to storage');
+    }
   };
 
-  const updatePoint = (index, field, value) => {
-    const newPoints = [...points];
-    newPoints[index] = { ...newPoints[index], [field]: value };
-    setPoints(newPoints);
+  const fetchExistingData = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`https://nfcmapsapi-2.onrender.com/api/location/${greenTagId}`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          setExistingData(null);
+          throw new Error('No existing data found for this green tag ID.');
+        } else {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+      } else {
+        const data = await response.json();
+        setExistingData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching existing data:', error);
+      setError(error.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const submitData = async () => {
-    if (!existingData) {
-      Alert.alert('Error', 'Existing data not loaded. Please try again.');
+  const updateNewPoint = (field, value) => {
+    setNewPoint({ ...newPoint, [field]: value });
+  };
+
+  const updateNewGreenTag = (field, value) => {
+    setNewGreenTag({ ...newGreenTag, [field]: value });
+  };
+
+  const validateInputs = (data) => {
+    for (let key in data) {
+      if (data[key] === '') {
+        throw new Error(`${key} cannot be empty`);
+      }
+      if (['lon', 'lat', 'exitLon', 'exitLat', 'radius'].includes(key)) {
+        if (isNaN(parseFloat(data[key]))) {
+          throw new Error(`${key} must be a valid number`);
+        }
+      }
+    }
+  };
+
+  const submitNewPoint = async () => {
+    if (isLoading) {
+      Alert.alert('Please Wait', 'Still loading existing data. Please try again in a moment.');
       return;
     }
 
     try {
-      for (const point of points) {
-        const formattedPoint = {
-          i: point.i,
-          l: [parseFloat(point.lon), parseFloat(point.lat)],
-          e: {
-            n: point.exitName,
-            l: [parseFloat(point.exitLon), parseFloat(point.exitLat)]
-          }
-        };
+      validateInputs(newPoint);
 
-        const response = await fetch('https://nfcmapsapi-1.onrender.com/api/location', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(formattedPoint),
-        });
+      const formattedNewPoint = {
+        i: newPoint.i,
+        l: [parseFloat(newPoint.lon), parseFloat(newPoint.lat)],
+        e: {
+          n: newPoint.exitName,
+          l: [parseFloat(newPoint.exitLon), parseFloat(newPoint.exitLat)]
+        },
+        caution: newPoint.caution
+      };
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+      const response = await fetch(`https://nfcmapsapi-2.onrender.com/api/location/${greenTagId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formattedNewPoint),
+      });
 
-        const result = await response.json();
-        console.log('Point submitted successfully:', result);
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorBody}`);
       }
 
-      Alert.alert('Success', 'New points added successfully');
-      setPoints([{ i: '', lon: '', lat: '', exitName: '', exitLon: '', exitLat: '' }]);
-      fetchExistingData(); // Refresh the existing data after adding new points
+      const result = await response.json();
+      console.log('Data submitted successfully:', result);
+
+      Alert.alert('Success', 'New point added successfully');
+      setNewPoint({ i: '', lon: '', lat: '', exitName: '', exitLon: '', exitLat: '', caution: '' });
+      fetchExistingData();
     } catch (error) {
       console.error('Error submitting data:', error);
-      Alert.alert('Error', 'Failed to submit new points');
+      Alert.alert('Error', `Failed to submit data: ${error.message}`);
+    }
+  };
+
+  const createNewGreenTag = async () => {
+    try {
+      validateInputs(newGreenTag);
+
+      const newLocation = {
+        t: "g",
+        id: newGreenTag.id,
+        c: [parseFloat(newGreenTag.lon), parseFloat(newGreenTag.lat)],
+        r: parseFloat(newGreenTag.radius),
+        p: []
+      };
+
+      console.log('Creating new green tag location:', newLocation);
+
+      const response = await fetch('https://nfcmapsapi-2.onrender.com/api/location', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(newLocation),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorBody}`);
+      }
+
+      const result = await response.json();
+      console.log('New green tag location created successfully:', result);
+
+      // Update local state and storage
+      const updatedTags = [...allGreenTags, newLocation];
+      setAllGreenTags(updatedTags);
+      await saveGreenTags(updatedTags);
+
+      Alert.alert('Success', 'New green tag location created successfully');
+      setNewGreenTag({ id: '', lon: '', lat: '', radius: '' });
+      setGreenTagId(newGreenTag.id);
+    } catch (error) {
+      console.error('Error creating new green tag:', error);
+      Alert.alert('Error', `Failed to create new green tag: ${error.message}`);
     }
   };
 
   return (
     <ScrollView style={styles.container}>
-      <Text style={styles.title}>Add New Points</Text>
+      <Text style={styles.title}>Location Management</Text>
 
-      {points.map((point, index) => (
-        <View key={index} style={styles.pointContainer}>
-          <Text style={styles.pointTitle}>Point {index + 1}</Text>
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Create New Green Tag Location</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="New Green Tag ID"
+          value={newGreenTag.id}
+          onChangeText={(text) => updateNewGreenTag('id', text)}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Longitude"
+          value={newGreenTag.lon}
+          onChangeText={(text) => updateNewGreenTag('lon', text)}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Latitude"
+          value={newGreenTag.lat}
+          onChangeText={(text) => updateNewGreenTag('lat', text)}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Radius"
+          value={newGreenTag.radius}
+          onChangeText={(text) => updateNewGreenTag('radius', text)}
+          keyboardType="numeric"
+        />
+        <TouchableOpacity style={styles.button} onPress={createNewGreenTag}>
+          <Text style={styles.buttonText}>Create New Green Tag Location</Text>
+        </TouchableOpacity>
+      </View>
 
-          <Text style={styles.label}>Tag ID:</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Tag ID"
-            value={point.i}
-            onChangeText={(text) => updatePoint(index, 'i', text)}
-          />
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Existing Green Tag Locations</Text>
+        {allGreenTags.map((tag, index) => (
+          <Text key={index} style={styles.tagItem}>{tag.id}: {tag.c[0]}, {tag.c[1]} (r: {tag.r})</Text>
+        ))}
+      </View>
 
-          <Text style={styles.label}>Tag Location:</Text>
-          <View style={styles.coordContainer}>
-            <TextInput
-              style={styles.input}
-              placeholder="Longitude"
-              value={point.lon}
-              onChangeText={(text) => updatePoint(index, 'lon', text)}
-              keyboardType="numeric"
-            />
-            <TextInput
-              style={styles.input}
-              placeholder="Latitude"
-              value={point.lat}
-              onChangeText={(text) => updatePoint(index, 'lat', text)}
-              keyboardType="numeric"
-            />
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Add New Point to Existing Location</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Existing Green Tag ID"
+          value={greenTagId}
+          onChangeText={setGreenTagId}
+        />
+
+        {isLoading ? (
+          <Text style={styles.loadingText}>Loading existing data...</Text>
+        ) : error ? (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>Error: {error}</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={fetchExistingData}>
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
           </View>
+        ) : (
+          <>
+            {existingData ? (
+              <View>
+                <Text style={styles.dataInfo}>Existing data loaded. You can add a new point.</Text>
+                <Text style={styles.dataInfo}>Current number of points: {existingData.p.length}</Text>
+              </View>
+            ) : (
+              <Text style={styles.dataInfo}>No existing data. Enter a valid Green Tag ID.</Text>
+            )}
 
-          <Text style={styles.label}>Exit Name:</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Exit Name"
-            value={point.exitName}
-            onChangeText={(text) => updatePoint(index, 'exitName', text)}
-          />
+            <View style={styles.pointContainer}>
+              <Text style={styles.pointTitle}>New Point</Text>
 
-          <Text style={styles.label}>Exit Location:</Text>
-          <View style={styles.coordContainer}>
-            <TextInput
-              style={styles.input}
-              placeholder="Longitude"
-              value={point.exitLon}
-              onChangeText={(text) => updatePoint(index, 'exitLon', text)}
-              keyboardType="numeric"
-            />
-            <TextInput
-              style={styles.input}
-              placeholder="Latitude"
-              value={point.exitLat}
-              onChangeText={(text) => updatePoint(index, 'exitLat', text)}
-              keyboardType="numeric"
-            />
-          </View>
-        </View>
-      ))}
+              <TextInput
+                style={styles.input}
+                placeholder="Tag ID (e.g., r4)"
+                value={newPoint.i}
+                onChangeText={(text) => updateNewPoint('i', text)}
+              />
 
-      <TouchableOpacity style={styles.button} onPress={addPoint}>
-        <Text style={styles.buttonText}>Add Another Point</Text>
-      </TouchableOpacity>
+              <View style={styles.coordContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Longitude"
+                  value={newPoint.lon}
+                  onChangeText={(text) => updateNewPoint('lon', text)}
+                  keyboardType="numeric"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Latitude"
+                  value={newPoint.lat}
+                  onChangeText={(text) => updateNewPoint('lat', text)}
+                  keyboardType="numeric"
+                />
+              </View>
 
-      <TouchableOpacity style={styles.submitButton} onPress={submitData}>
-        <Text style={styles.buttonText}>Submit</Text>
-      </TouchableOpacity>
+              <TextInput
+                style={styles.input}
+                placeholder="Exit Name"
+                value={newPoint.exitName}
+                onChangeText={(text) => updateNewPoint('exitName', text)}
+              />
+
+              <View style={styles.coordContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Exit Longitude"
+                  value={newPoint.exitLon}
+                  onChangeText={(text) => updateNewPoint('exitLon', text)}
+                  keyboardType="numeric"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Exit Latitude"
+                  value={newPoint.exitLat}
+                  onChangeText={(text) => updateNewPoint('exitLat', text)}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              <TextInput
+                style={styles.input}
+                placeholder="Caution"
+                value={newPoint.caution}
+                onChangeText={(text) => updateNewPoint('caution', text)}
+              />
+            </View>
+
+            <TouchableOpacity style={styles.submitButton} onPress={submitNewPoint}>
+              <Text style={styles.buttonText}>Submit New Point</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
     </ScrollView>
   );
 };
@@ -158,9 +328,13 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 20,
   },
-  label: {
-    fontSize: 16,
-    marginBottom: 5,
+  section: {
+    marginBottom: 30,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 15,
   },
   input: {
     borderWidth: 1,
@@ -189,7 +363,7 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 5,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 10,
   },
   submitButton: {
     backgroundColor: '#28a745',
@@ -202,6 +376,38 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  loadingText: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginTop: 20,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  errorText: {
+    color: 'red',
+    fontSize: 16,
+    marginBottom: 10,
+  },
+  retryButton: {
+    backgroundColor: '#007AFF',
+    padding: 10,
+    borderRadius: 5,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontSize: 16,
+  },
+  dataInfo: {
+    fontSize: 16,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  tagItem: {
+    fontSize: 14,
+    marginBottom: 5,
   },
 });
 
