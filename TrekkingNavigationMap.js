@@ -20,6 +20,7 @@ const TrekkingNavigationMap = () => {
   const [isSetupComplete, setIsSetupComplete] = useState(false);
   const [storedRoutes, setStoredRoutes] = useState({});
   const [exitPoint, setExitPoint] = useState(null);
+  const [messages, setMessages] = useState({});
 
   const mapRef = useRef(null);
   const cameraRef = useRef(null);
@@ -140,8 +141,8 @@ const TrekkingNavigationMap = () => {
       if (data.t === 'g') {
         try {
           const greenTagId = data.id;
-          console.log('Fetching from:', `https://nfcmapsapi-1.onrender.com/api/location/${greenTagId}`);
-          const response = await fetch(`https://nfcmapsapi-1.onrender.com/api/location/${greenTagId}`);
+          console.log('Fetching from:', `https://nfcmapsapi-2.onrender.com/api/location/${greenTagId}`);
+          const response = await fetch(`https://nfcmapsapi-2.onrender.com/api/location/${greenTagId}`);
           console.log('Response status:', response.status);
 
           if (response.status === 404) {
@@ -155,7 +156,6 @@ const TrekkingNavigationMap = () => {
           const locationData = await response.json();
           console.log('Received location data:', locationData);
 
-          // Validate the received data structure
           if (!locationData.t || !locationData.id || !Array.isArray(locationData.c) || typeof locationData.r !== 'number' || !Array.isArray(locationData.p)) {
             throw new Error('Invalid data structure received from the server');
           }
@@ -175,9 +175,10 @@ const TrekkingNavigationMap = () => {
           await AsyncStorage.setItem('offlineData', JSON.stringify({
             center: center,
             storedRoutes: newStoredRoutes,
-            isSetupComplete: true
+            isSetupComplete: true,
+            messages: messages
           }));
-          Alert.alert('Setup Updated', 'Map data and routes have been updated.');
+          Alert.alert('Setup Updated', 'Map data, routes, and caution messages have been updated.');
         } catch (error) {
           console.error('Error fetching location data:', error);
           if (error.message === 'Green tag ID not found') {
@@ -197,7 +198,10 @@ const TrekkingNavigationMap = () => {
           setExitPoint(storedRoutes[tagId].exitLocation);
           console.log('Route set:', storedRoutes[tagId].route);
           setIsNavigating(true);
-          Alert.alert('Navigation Started', `Navigating to exit point: ${storedRoutes[tagId].exitName}`);
+
+          // Display caution message for red tag
+          const cautionMessage = messages[tagId] || 'Caution: Be aware of your surroundings.';
+          Alert.alert('Caution', cautionMessage);
         } else {
           console.log('Route not found for tag ID:', tagId);
           Alert.alert('Navigation Error', 'Could not find a stored route for this location.');
@@ -205,36 +209,44 @@ const TrekkingNavigationMap = () => {
       } else {
         Alert.alert('Invalid Tag', 'The scanned tag is not recognized by the system.');
       }
-    }, [downloadOfflineRegion, isSetupComplete, storedRoutes, clearExistingRoutes]);
+    }, [downloadOfflineRegion, isSetupComplete, storedRoutes, clearExistingRoutes, messages]);
 
-  const fetchAndStoreRoutes = async (points) => {
-    const newStoredRoutes = {};
-    for (const point of points) {
-      try {
-        console.log(`Fetching route for point ${point.i}`);
-        const response = await fetch(
-          `https://api.mapbox.com/directions/v5/mapbox/walking/${point.l[0]},${point.l[1]};${point.e.l[0]},${point.e.l[1]}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`
-        );
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        console.log(`Route data received for point ${point.i}:`, data);
-        if (!data.routes || !data.routes[0] || !data.routes[0].geometry || !data.routes[0].geometry.coordinates) {
-          throw new Error('Invalid route data structure');
-        }
-        newStoredRoutes[point.i] = {
-          route: data.routes[0].geometry.coordinates,
-          exitName: point.e.n,
-          exitLocation: point.e.l
-        };
-        console.log(`Route stored for tag ${point.i}:`, newStoredRoutes[point.i]);
-      } catch (error) {
-        console.error(`Error fetching route for ${point.i}:`, error);
-      }
-    }
-    return newStoredRoutes;
-  };
+   const fetchAndStoreRoutes = async (points) => {
+       const newStoredRoutes = {};
+       const newMessages = {};
+       for (const point of points) {
+         try {
+           console.log(`Fetching route for point ${point.i}`);
+           const response = await fetch(
+             `https://api.mapbox.com/directions/v5/mapbox/walking/${point.l[0]},${point.l[1]};${point.e.l[0]},${point.e.l[1]}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`
+           );
+           if (!response.ok) {
+             throw new Error(`HTTP error! status: ${response.status}`);
+           }
+           const data = await response.json();
+           console.log(`Route data received for point ${point.i}:`, data);
+           if (!data.routes || !data.routes[0] || !data.routes[0].geometry || !data.routes[0].geometry.coordinates) {
+             throw new Error('Invalid route data structure');
+           }
+           newStoredRoutes[point.i] = {
+             route: data.routes[0].geometry.coordinates,
+             exitName: point.e.n,
+             exitLocation: point.e.l
+           };
+           console.log(`Route stored for tag ${point.i}:`, newStoredRoutes[point.i]);
+
+           // Store caution message for each point
+           if (point.caution) {
+             newMessages[point.i] = point.caution;
+           }
+         } catch (error) {
+           console.error(`Error fetching route for ${point.i}:`, error);
+         }
+       }
+       setMessages(newMessages);
+       return newStoredRoutes;
+     };
+
 
   const startNavigation = useCallback(() => {
     if (offlinePack && route && isSetupComplete) {
